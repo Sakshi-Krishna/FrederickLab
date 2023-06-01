@@ -1,0 +1,352 @@
+from ssl import HAS_TLSv1_2
+from mmap import ACCESS_READ
+from matplotlib import colors
+from seaborn.widgets import color_palette
+import csv
+import sys
+import glob
+import math
+import pandas as pd
+import numpy as np
+import argparse
+import re
+import matplotlib.pyplot as plt
+import matplotlib.ticker as pltticker
+import seaborn as sns
+
+
+ 
+#################################################
+### GENERAL PROPERTIES x-limits, rama regions ###
+#################################################
+
+na=np.nan
+atoms = ['ca','cb','c']
+aa_spec_ranges={
+                # Specify the x-axis limits.
+                # Ca & Cb adjusted to 17ppm to match Fig5
+                #aa1 Ca      Cb      C
+                'A':[[44,61],[11,28],[170,184]],
+                'R':[[47,64],[22,39],[169,183]],
+                'N':[[44,61],[30,47],[168,182]],
+                'D':[[45,62],[33,50],[169,183]],
+#               'C':[[50,67],[22,39],[168,182]],
+                'Q':[[47,64],[22,39],[169,183]],
+                'E':[[49,66],[22,39],[169,183]],
+                'G':[[36,53],[na,na],[167,181]],
+                'H':[[49,66],[23,40],[168,182]],
+                'I':[[54,71],[31,48],[168,182]],
+                'L':[[45,62],[33,50],[170,184]],
+                'K':[[49,66],[26,43],[169,183]],
+                'M':[[47,64],[26,43],[169,183]],
+                'F':[[50,67],[31,48],[168,182]],
+                'P':[[57,74],[25,42],[170,184]],
+                'S':[[50,72],[55,72],[167,181]],
+                'T':[[54,71],[60,77],[168,182]],
+                'W':[[48,65],[21,38],[169,183]],
+                'Y':[[50,67],[30,47],[168,182]],
+                'V':[[54,71],[25,42],[169,183]],
+                }
+
+### specification of how the ramachandran   ###
+### space is separated into parcels/regions ###
+rama_definitions = {
+  ### selection: Frederick lab ###
+  # ralpha and rturnI can overlap since
+  # there is statement later on to exclude 
+  # ralpha from rtunrI. This exclusion doesn't 
+  # affect the "blackledge: and "bax" selection
+  # since there is no overlap in the later two. 
+  "frederick":
+  {
+  'rbetaA':(-180.0, -90.0, 105.0, 180.0),
+  'rbetaB':(-180.0,-105.0,-180.0,-135.0),
+  'rppiiA':( -90.0,   0.0, 105.0, 180.0),
+  'rppiiB':(-105.0,   0.0,-180.0,-135.0),
+  'rdelta':(-180.0,   0.0,  45.0, 105.0),
+  'rlhelx':(   0.0, 180.0,-180.0, 180.0),
+  'rturnI':(-180.0,   0.0,-135.0,  45.0), # turn is wider alpha
+  'ralpha':( -82.5, -37.5, -60.0, -20.0), # alph is strictly alpha
+  },
+  ### selection: Blackledge lab ###
+  "blackledge":
+  {
+  'rbetaA':(-180.0, -90.0,  45.0, 180.0),
+  'rbetaB':(-180.0, -90.0,-180.0,-120.0),
+  'rppiiA':( -90.0,   0.0,  45.0, 180.0),
+  'rppiiB':( -90.0,   0.0,-180.0,-120.0),
+  'rdelta':(   0.0,   0.0,   0.0,   0.0),
+  'rlhelx':(   0.0, 180.0,-180.0, 180.0),
+  'rturnI':(   0.0,   0.0,   0.0,   0.0),
+  'ralpha':(-180.0,   0.0,-120.0,  45.0),
+  },
+  ### selection: Bax lab ###
+  "bax":
+  {
+  'rbetaA':(-180, -90,  90, 180),
+  'rbetaB':(   0,   0,   0,   0),
+  'rppiiA':( -90, -45, 105, 180),
+  'rppiiB':(   0,   0,   0,   0),
+  'rdelta':(   0,   0,   0,   0),
+  'rlhelx':(  45,  75,  15,  60),
+  'rturnI':(-135, -75, -15,  30),
+  'ralpha':( -90, -45, -60, -15),
+  }}
+
+# the "rama_definitions" and "label_definitions" can be extended
+# to include more regions (e.g. separate epsilono and delta'). 
+labels_definitions = {
+        'frederick': ['beta','ppii','ddgg','left','turn','alph'],
+        'blackledge':['beta','ppii','ddgg','left','turn','alph'],
+        'bax':       ['beta','ppii','ddgg','left','turn','alph'],
+        }
+
+# Order of the colors: 'beta','ppii','ddgg','left','turn','alph'
+seaborn_colorblind = [colors.to_hex(i)for i in sns.color_palette('colorblind',6)]
+seaborn_husl = [colors.to_hex(i)for i in sns.color_palette('husl',6)]
+color_definitions = {
+       'clown':  ['#0000f2','#00a88d','#ebb200','#e88c0b','#f0601e','#f00000'],
+       'viridis':['#440356','#3e4989','#297b8e','#23a983','#7fd34e','#fbe723'],
+       'plasma': ['#0d0887','#6900a8','#b02a90','#e06363','#fca537','#f0f724'],
+       'redblue':['#1b1b64', '#5e93dc', '#b3dfff', '#f3ecb7', '#eeaa38', '#a60000'],
+       'seaborn': seaborn_colorblind,
+       'husl': seaborn_husl,
+       }
+
+
+################################################
+###     main() function: data processing     ###
+################################################
+
+def main(input_file_path, output_file_path, aa, definition, color_palette, alpha_choice):
+
+
+  ### read in regions ###
+  data = []
+  with open(input_file_path, mode="r") as infile: #open data file and read contents
+    reader = csv.reader(infile, delimiter="\n")
+    for row in reader:
+      if len(row) == 1:
+        data.append(re.split('\t', row[0])[2:])
+      else:
+        data.append(row)
+  def get_row_floats(data, row):
+    return list(map(lambda x: float(x[row]), data))
+  #print(f'Data: {data}\n\n')
+  phi = get_row_floats(data[1:], 0) #def z as CO shift
+  psi = get_row_floats(data[1:], 1) #def w as N shift
+  ca = get_row_floats(data[1:], 2)
+  cb = get_row_floats(data[1:], 3)
+  c = get_row_floats(data[1:], 4)
+  n = get_row_floats(data[1:], 5)
+  # the columns/header of the input should be:
+  # res  aa  phi  psi ca  cb  c  n
+
+  ### order of ramachandran elements ###
+  labels=labels_definitions[definition]
+
+  ### which definition of regions in Ramachandran  ###
+  ### space have you selected while providing args ###
+  rchoice = rama_definitions[definition]
+
+  ### choice of the color palette ###
+  col = color_definitions[color_palette]
+  
+  ### extract plot subregions ###
+  # "r" stands for ramachandran
+  # regions: beta-strand, polyproline helix ii
+  #          beta-turn I, alpha-helix, 
+  #          left handed helix (all phi > 0)
+  # !!! top and left corner are always >= or <=
+  #     unless they reach the bottom/right axis
+  #     (i.e. betaB, ppiiB, left)
+  
+  #filter beta regions
+  mask1 = np.logical_and(np.array(phi) >= rchoice['rbetaA'][0], np.array(phi) <= rchoice['rbetaA'][1])
+  mask1 = np.logical_and(mask1, np.array(psi) >= rchoice['rbetaA'][2])
+  mask1 = np.logical_and(mask1, np.array(psi) <= rchoice['rbetaA'][3])
+
+  mask2 = np.logical_and(np.array(phi) >= rchoice['rbetaB'][0], np.array(phi) <= rchoice['rbetaB'][1])
+  mask2 = np.logical_and(mask1, np.array(psi) >= rchoice['rbetaB'][2])
+  mask2 = np.logical_and(mask1, np.array(psi) <= rchoice['rbetaB'][3])
+
+  mask = np.logical_or(mask1, mask2)
+
+  data_beta_ca = np.array(ca)[mask]
+  data_beta_cb = np.array(cb)[mask]
+  data_beta_c = np.array(c)[mask]
+  data_beta_n = np.array(n)[mask]
+
+  #filter ppii regions
+  mask1 = np.logical_and(np.array(phi) >= rchoice['rppiiA'][0], np.array(phi) <= rchoice['rppiiA'][1])
+  mask1 = np.logical_and(mask1, np.array(psi) >= rchoice['rppiiA'][2])
+  mask1 = np.logical_and(mask1, np.array(psi) <= rchoice['rppiiA'][3])
+
+  mask2 = np.logical_and(np.array(phi) >= rchoice['rppiiB'][0], np.array(phi) <= rchoice['rppiiB'][1])
+  mask2 = np.logical_and(mask1, np.array(psi) >= rchoice['rppiiB'][2])
+  mask2 = np.logical_and(mask1, np.array(psi) <= rchoice['rppiiB'][3])
+
+  mask = np.logical_or(mask1, mask2)
+
+  data_ppii_ca = np.array(ca)[mask]
+  data_ppii_cb = np.array(cb)[mask]
+  data_ppii_c = np.array(c)[mask]
+  data_ppii_n = np.array(n)[mask]
+  
+  #filter ddgg
+  mask = np.logical_and(np.array(phi) >= rchoice['rdelta'][0], np.array(phi) <= rchoice['rdelta'][1])
+  mask = np.logical_and(mask1, np.array(psi) >= rchoice['rdelta'][2])
+  mask = np.logical_and(mask1, np.array(psi) <= rchoice['rdelta'][3])
+
+  data_ddgg_ca = np.array(ca)[mask]
+  data_ddgg_cb = np.array(cb)[mask]
+  data_ddgg_c = np.array(c)[mask]
+  data_ddgg_n = np.array(n)[mask]
+  
+  #filter turn
+  mask1 = np.logical_and(np.array(phi) >= rchoice['rturnI'][0], np.array(phi) < rchoice['ralpha'][0])
+  mask1 = np.logical_and(mask1, np.array(psi) >= rchoice['rturnI'][2])
+  mask1 = np.logical_and(mask1, np.array(psi) <= rchoice['rturnI'][3])
+
+  mask2 = np.logical_and(np.array(phi) >= rchoice['ralpha'][1], np.array(phi) < rchoice['rturnI'][1])
+  mask2 = np.logical_and(mask1, np.array(psi) >= rchoice['rturnI'][2])
+  mask2 = np.logical_and(mask1, np.array(psi) <= rchoice['rturnI'][3])
+
+  mask3 = np.logical_and(np.array(phi) >= rchoice['ralpha'][0], np.array(phi) < rchoice['ralpha'][1])
+  mask3 = np.logical_and(mask1, np.array(psi) >= rchoice['rturnI'][2])
+  mask3 = np.logical_and(mask1, np.array(psi) <= rchoice['ralpha'][2])
+
+  mask4 = np.logical_and(np.array(phi) >= rchoice['ralpha'][0], np.array(phi) < rchoice['ralpha'][1])
+  mask4 = np.logical_and(mask1, np.array(psi) > rchoice['ralpha'][3])
+  mask4 = np.logical_and(mask1, np.array(psi) <= rchoice['rturnI'][3])
+  
+  mask = np.logical_or(mask1, np.logical_or(mask2, np.logical_or(mask3, mask4)))
+  data_turn_ca = np.array(ca)[mask]
+  data_turn_cb = np.array(cb)[mask]
+  data_turn_c = np.array(c)[mask]
+  data_turn_n = np.array(n)[mask]
+
+  #filter alph
+  mask = np.logical_and(np.array(phi) >= rchoice['ralpha'][0], np.array(phi) < rchoice['ralpha'][1])
+  mask = np.logical_and(mask1, np.array(psi) > rchoice['ralpha'][2])
+  mask = np.logical_and(mask1, np.array(psi) <= rchoice['ralpha'][3])
+
+  data_alph_ca = np.array(ca)[mask]
+  data_alph_cb = np.array(cb)[mask]
+  data_alph_c = np.array(c)[mask]
+  data_alph_n = np.array(n)[mask]
+  
+  #filter left
+  mask = np.logical_and(np.array(phi) >= rchoice['rlhelx'][0], np.array(phi) <= rchoice['rlhelx'][1])
+  mask = np.logical_and(mask1, np.array(psi) >= rchoice['rlhelx'][2])
+  mask = np.logical_and(mask1, np.array(psi) <= rchoice['rlhelx'][3])
+
+  data_left_ca = np.array(ca)[mask]
+  data_left_cb = np.array(cb)[mask]
+  data_left_c = np.array(c)[mask]
+  data_left_n = np.array(n)[mask] 
+ 
+
+  # create dictionaries of data sets
+  
+  cs_ca = ({'beta': data_beta_ca,
+            'ppii': data_ppii_ca,
+            'ddgg': data_ddgg_ca,
+            'left': data_left_ca,
+            'turn': data_turn_ca,
+            'alph': data_alph_ca,
+            })
+  cs_cb = ({'beta': data_beta_cb,
+            'ppii': data_ppii_cb,
+            'ddgg': data_ddgg_cb,
+            'left': data_left_cb,
+            'turn': data_turn_cb,
+            'alph': data_alph_cb,
+            })
+  cs_co = ({'beta': data_beta_c,
+            'ppii': data_ppii_c,
+            'ddgg': data_ddgg_c,
+            'left': data_left_c,
+            'turn': data_turn_c,
+            'alph': data_alph_c,
+            })
+  
+  cs_all = {'ca':cs_ca, 
+            'cb':cs_cb, 
+            'c' :cs_co,
+            }
+
+  plot_types = [False,True] # Histograms are either True/Stacked or False/Overlapped
+  for plot_type in plot_types:
+    
+    # initiate plotting
+    fig, axs = plt.subplots(1, 3, sharey=False, tight_layout=True,figsize=(9.75,1.50))
+
+    # specify bind widths
+    min_max=aa_spec_ranges[aa]
+    bin_width=0.25
+    bins_array=[np.arange(i[0],i[1]+1,bin_width) for i in min_max]
+
+    # PLOTTING all three atoms: CA, CB, C
+    for i in range(len(atoms)): 
+      # HIST PLOT
+      # hist() uses plot_type variable to determine if stacked or not
+      h, bins, patches = axs[i].hist(list(cs_all[atoms[i]].values()),
+                            bins=bins_array[i],
+                            density=False, 
+                            histtype='stepfilled', 
+                            stacked=plot_type,
+                            color=col,
+                            alpha=alpha_choice,
+                            label=labels)
+
+      stacked_data = [j for sub in list(cs_all[atoms[i]].values()) for j in sub]
+      axs[i].hist(stacked_data, # SUM PLOT: line histogram plot
+                  bins=bins_array[i], 
+                  density=False, 
+                  histtype='step', 
+                  stacked=False,
+                  color='black',
+                  alpha=1.0)
+    
+    ### FORMATTING ###
+      axs[i].set_xlim(min_max[i])
+      mtick_spacing=5
+      axs[i].xaxis.set_major_locator(pltticker.MultipleLocator(mtick_spacing))
+      axs[i].xaxis.set_minor_locator(pltticker.MultipleLocator(1))
+      axs[i].yaxis.set_ticks([])
+
+      # other formatting
+      axs[i].invert_xaxis()
+      for line in ['top','left','right']:
+        axs[i].spines[line].set_visible(False)
+      for line in ['bottom']:
+        axs[i].spines[line].set_visible(True)
+
+    # SAVE PLOT: save figure with _stacked suffix if stacked
+    if not plot_type:
+      print("\nsaved: {}".format(output_file_path))
+      plt.savefig(output_file_path)
+    else:
+      print("saved: {}\n".format(output_file_path.split('.')[0] + "_stacked.pdf"))
+      plt.savefig(".pdf") #Save plot as a pdf
+    
+    plt.clf()
+  plt.close()
+
+print("Enter the input file path, output file path, amino acid, phi/psi definition, color palette, and alpha value separated by commas, or \'Z\' to quit: ")
+quit = False
+while not quit:
+  inputs = input()
+  if inputs.upper() == 'Z':
+    quit = True
+  else:
+    inputs = inputs.split(',')
+    input_file_path = inputs[0]
+    output_file_path = inputs[1]
+    aa = inputs[2]
+    definition = inputs[3] #use frederick
+    color_palette = inputs[4]
+    alpha_choice = float(inputs[5]) #for opacity of plot (1 is fully opaque)
+    main(input_file_path, output_file_path, aa, definition, color_palette, alpha_choice) 
+    print("Enter the input file path, output file path, amino acid, phi/psi definition, color palette, and alpha value separated by commas, or \'Z\' to quit: ")
