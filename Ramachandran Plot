@@ -1,0 +1,69 @@
+from posixpath import join
+!pip install bio --upgrade
+import sys
+import glob
+import math
+import pandas as pd
+import argparse
+import seaborn
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.ticker as pltticker
+import csv
+import re
+from matplotlib import colors
+from statistics import mean
+from Bio.Data.IUPACData import protein_letters_1to3 as one2three
+def generate_plot(file_name, AA_OLC): 
+  aa1 = AA_OLC
+  data = []
+  with open(file_name, mode="r") as infile: #open data file and read contents
+    reader = csv.reader(infile, delimiter="\n")
+    for row in reader:
+      if len(row) == 1:
+        data.append(re.split('\t', row[0])[2:])
+      else:
+        data.append(row)
+  def get_row_floats(data, row):
+    return list(map(lambda x: float(x[row]), data))
+    #print(f'Data: {data}\n\n')
+  phi = get_row_floats(data[1:], 0) #def z as CO shift
+  psi = get_row_floats(data[1:], 1) #def w as N shift
+
+
+  bin_width = .5
+
+  x_lims = [-180,180]
+  y_lims = [-180,180]
+  x_edges =np.arange(x_lims[0],x_lims[1]+bin_width,bin_width) #create an array from one limit to the next using bin widths
+  y_edges=np.arange(y_lims[0],y_lims[1]+bin_width,bin_width)
+  hw=bin_width/2
+  center_bins_x=np.arange(x_lims[0]+hw,x_lims[1]+hw,bin_width)
+  center_bins_y=np.arange(y_lims[0]+hw,y_lims[1]+hw,bin_width)
+
+        # calculate counts for bins #
+  H1, npxedges, npyedges = np.histogram2d(psi,phi,bins=(y_edges,x_edges))
+        # set contouring parameters #
+  #H = np.sum((H1,H2), axis=0
+
+  plt.scatter(phi,psi)
+  plt.title('Phi-Psi Angle Heatmap')
+  plt.title('Phi-Psi Angle Heatmap')
+  plt.xlabel('Phi')
+  plt.ylabel('Psi')
+  plt.xlim([-180,180])
+  plt.ylim([-180,180])
+  plt.show()
+
+print("Enter the file path and amino acid, separated by commas, or \'Z\' to quit: ")
+quit = False
+while not quit:
+  inputs = input()
+  if inputs.upper() == 'Z':
+    quit = True
+  else:
+    inputs = inputs.split(',')
+    file_name = inputs[0]
+    AA_OLC = inputs[1]
+    generate_plot(file_name, AA_OLC)
+    print("Enter the file path and amino acid, separated by commas, or \'Z\' to quit: ")
